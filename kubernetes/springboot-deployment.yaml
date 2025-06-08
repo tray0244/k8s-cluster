@@ -1,0 +1,21 @@
+#springboot-deployment.yaml
+# Deployment: Spring Boot 컨테이너를 실행시키는 설정
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: my-final-springboot-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: my-final-springboot-app
+  template:
+    metadata:
+      labels:
+        app: my-final-springboot-app
+    spec:
+      containers:
+      - name: my-springboot-container
+        image: <your-dockerhub-username>/k8s-hello:2.0 # HTML 페이지가 포함된 2.0 버전
+        ports:
+        - containerPort: 8080
