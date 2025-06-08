@@ -1,0 +1,160 @@
+# GCP를 이용한 k8s-cluster 구축
+
+# 1. GCP 방화벽 규칙 설정
+# - 클러스터 내부 통신을 위해 GCP 방화벽 규칙을 설정한다.
+# - 이름	          대상 태그	                  소스 필터	                        프로토콜 및 포트
+# - k8s-master	  k8s-master	              IP 주소 범위: 0.0.0.0/0	          tcp:6443
+# - k8s-nodeport	k8s-worker	              IP 주소 범위: 0.0.0.0/0	          tcp:30000-32767
+# - k8s-internal	(k8s-master, k8s-worker)	소스 태그: k8s-master, k8s-worker	모두 허용
+
+# 2. VM 인스턴스 생성
+# GCP 콘솔에서 다음 사양으로 VM 인스턴스 3개를 생성합니다.
+# 리전/영역: us-central1-a
+# 머신 유형: e2-standard-2 (vCPU 2개, 메모리 8GB)
+# 부팅 디스크: Ubuntu 22.04 LTS
+# 인스턴스 이름 및 네트워크 태그:
+# 마스터 노드:
+#   이름: k8s-master
+#   네트워크 태그: k8s-master
+# 워커 노드 1:
+#   이름: k8s-worker1
+#   네트워크 태그: k8s-worker
+# 워커 노드 2:
+#   이름: k8s-worker2
+#   네트워크 태그: k8s-worker
+
+# 3. 모든 노드에 공통 설정
+# 각 VM 인스턴스를 ssh로 접속하여 설치
+# --- 3.1 iptables 모드 'legacy'로 강제 설정 ---
+# 최신 Ubuntu의 nftables 모드와 발생하는 충돌을 사전에 방지합니다.
+sudo update-alternatives --set iptables /usr/sbin/iptables-legacy
+sudo update-alternatives --set ip6tables /usr/sbin/ip6tables-legacy
+
+
+# --- 3.2 Kubernetes 실행을 위한 사전 준비 ---
+# 스왑 비활성화
+sudo swapoff -a
+sudo sed -i '/ swap / s/^\(.*\)$/#\1/g' /etc/fstab
+
+
+# 필요한 커널 모듈 로드
+cat <<EOF | sudo tee /etc/modules-load.d/k8s.conf
+overlay
+br_netfilter
+EOF
+
+sudo modprobe overlay
+sudo modprobe br_netfilter
+
+# k8s 네트워킹을 위한 sysctl 파라미터 설정
+cat <<EOF | sudo tee /etc/sysctl.d/k8s.conf
+net.bridge.bridge-nf-call-ip6tables = 1
+net.bridge.bridge-nf-call-iptables  = 1
+net.ipv4.ip_forward                 = 1
+EOF
+sudo sysctl --system
+
+# --- 3.3 컨테이너 런타임(containerd) 설치 및 설정 ---
+sudo apt-get update
+sudo apt-get install -y containerd
+
+# containerd 설정 파일 생성
+sudo mkdir -p /etc/containerd
+sudo containerd config default | sudo tee /etc/containerd/config.toml
+
+# (가장 중요!) Cgroup 드라이버를 systemd로 설정하여 kubelet과 일치시킵니다.
+sudo sed -i 's/SystemdCgroup = false/SystemdCgroup = true/' /etc/containerd/config.toml
+
+# --- 3.4 쿠버네티스 도구 설치 ---
+sudo apt-get install -y apt-transport-https ca-certificates curl gpg
+
+# 새로운 공식 저장소 키와 주소를 사용합니다.
+sudo mkdir -p -m 755 /etc/apt/keyrings
+curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.30/deb/Release.key | sudo gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+echo 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.30/deb/ /' | sudo tee /etc/apt/sources.list.d/kubernetes.list
+
+sudo apt-get update
+sudo apt-get install -y kubelet kubeadm kubectl
+sudo apt-mark hold kubelet kubeadm kubectl
+
+# --- 3.5 모든 설정 적용을 위해 서비스 재시작 ---
+sudo systemctl restart containerd
+sudo systemctl restart kubelet
+
+# 4. 마스터 노드 초기화
+# k8s-master노드에서 명령어 실행합니다.
+sudo kubeadm init --pod-network-cidr=192.168.0.0/16 --apiserver-advertise-address=<MASTER_PRIVATE_IP>
+
+# 초기화 성공 후, 화면에 출력되는 mkdir ..., cp ..., chown ... 세 줄의 명령어를 순서대로 실행하여 kubectl 환경을 설정합니다.
+mkdir -p $HOME/.kube
+sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
+sudo chown $(id -u):$(id -g) $HOME/.kube/config
+
+# 5. 네트워크(Calico) 플러그인 설치
+# k8s-master 노드에서 클러스터의 네트워크를 담당할 Calico를 설치합니다.
+kubectl apply -f https://raw.githubusercontent.com/projectcalico/calico/v3.28.0/manifests/calico.yaml
+
+# 6. 워커 노드 클러스터 참여
+# 마스터 노드에서 sudo kubeadm token create --print-join-command를 실행하여 새로운 join 명령어를 얻습니다.
+# 출력된 sudo kubeadm join ... 명령어를 복사하여 **k8s-worker1**과 **k8s-worker2**에서 각각 실행합니다.
+
+# 7. Kubernetes 대시보드 설치 및 접속
+kubectl apply -f https://raw.githubusercontent.com/kubernetes/dashboard/v2.7.0/aio/deploy/recommended.yaml
+
+# 서비스 외부 노출
+# 대시보드 서비스를 NodePort 타입으로 변경하여 외부에서 접속할 수 있도록 합니다.
+kubectl -n kubernetes-dashboard edit service kubernetes-dashboard
+
+# 관리자 계정 생성
+# 대시보드에 모든 권한으로 로그인할 관리자 계정을 생성합니다. 아래 YAML 내용을 dashboard-admin.yaml 파일로 저장한 후, kubectl apply -f dashboard-admin.yaml 명령어로 적용합니다.
+# dashboard-admin.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: admin-user
+  namespace: kubernetes-dashboard
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: admin-user
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-admin
+subjects:
+- kind: ServiceAccount
+  name: admin-user
+  namespace: kubernetes-dashboard
+
+# 대시보드 권한 문제 해결
+# 대시보드 UI에서 모든 리소스가 보이도록, 명시적인 읽기 권한을 추가해 줍니다. 아래 내용을 dashboard-view-permission.yaml 파일로 저장한 후, kubectl apply -f dashboard-view-permission.yaml 명령어로 적용합니다.
+# dashboard-view-permission.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: dashboard-read-only
+rules:
+- apiGroups: ["*"]
+  resources: ["*"]
+  verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: dashboard-read-only-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: dashboard-read-only
+subjects:
+- kind: ServiceAccount
+  name: admin-user
+  namespace: kubernetes-dashboard
+
+# 최종 접속
+# 마스터 노드에서 아래 명령어로 로그인 토큰을 얻습니다.
+kubectl -n kubernetes-dashboard create token admin-user
+# kubectl get service -n kubernetes-dashboard 명령어로 NodePort 번호를 확인합니다.
+# 웹 브라우저에서 https://<워커노드 외부 IP>:<포트 번호>로 접속하여, 복사한 토큰으로 로그인
+
