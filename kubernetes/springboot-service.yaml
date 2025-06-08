@@ -1,0 +1,14 @@
+# springboot-service.yaml
+# Service: 외부 접속을 위한 NodePort 서비스 설정
+apiVersion: v1
+kind: Service
+metadata:
+  name: my-final-springboot-nodeport
+spec:
+  type: NodePort
+  selector:
+    app: my-final-springboot-app
+  ports:
+  - protocol: TCP
+    port: 8080
+    targetPort: 8080
