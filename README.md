@@ -10,11 +10,9 @@
 
 ## 핵심 기술 스택
 
-- **Cloud**: Google Cloud Platform (GCP)
-- **Infrastructure**: Compute Engine (VM Instance)
-- **Orchestration**: Kubernetes (kubeadm)
-- **Containerization**: Docker
-- **Application**: Spring Boot, Java 17, Gradle
+- **클라우드**: Google Cloud Platform (GCP)
+- **구조**: Compute Engine (VM Instance)
+- **사용된 기술**: Kubernetes (kubeadm), Docker, Spring Boot, Java 17, Gradle
 - **CI/CD**: Docker Hub
 
 ## 실행 방법
